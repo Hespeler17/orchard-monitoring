@@ -7,7 +7,7 @@ import os
 import json
 from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
-from database import init_database, save_uplink, get_database_stats
+from database import init_database, save_uplink, get_database_stats, get_sensor_types
 
 load_dotenv()
 
@@ -28,8 +28,10 @@ def on_connect(client, userdata, flags, rc, properties=None):
         
         stats = get_database_stats()
         print(f"\n💾 Database stats:")
-        print(f"   Uplinks saved: {stats['uplinks']}")
-        print(f"   Sensor readings: {stats['readings']}")
+        print(f"   Devices:    {stats['devices']}")
+        print(f"   Uplinks:    {stats['uplinks']}")
+        print(f"   Readings:   {stats['readings']}")
+        print(f"   Sensor types: {stats['sensor_types']}")
         
         print("-" * 60)
         print("Waiting for messages... (Press Ctrl+C to stop)")
@@ -106,8 +108,9 @@ def main():
         print("\n\n👋 Disconnecting...")
         stats = get_database_stats()
         print(f"\n💾 Final stats:")
-        print(f"   Total uplinks: {stats['uplinks']}")
-        print(f"   Total readings: {stats['readings']}")
+        print(f"   Devices:    {stats['devices']}")
+        print(f"   Uplinks:    {stats['uplinks']}")
+        print(f"   Readings:   {stats['readings']}")
         client.disconnect()
         print("✅ Done")
     except Exception as e:
