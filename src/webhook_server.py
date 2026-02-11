@@ -16,6 +16,7 @@ from database import (
     get_latest_readings, get_devices, get_sensor_types,
     get_mills_periods, get_irrigation_events, get_spray_applications,
 )
+from conversions import frequency_to_kpa, get_irrigation_status
 
 app = Flask(__name__)
 
@@ -97,13 +98,31 @@ def webhook():
 
         uplink_id = save_uplink(device_id, timestamp, gateway_id, rssi, snr, decoded)
 
-        print(f"Uplink saved (ID: {uplink_id}) device={device_id} RSSI={rssi} SNR={snr}")
+        # Log kPa conversions for soil moisture sensors
+        temperature_c = decoded.get('mcu_temperature_c')
+        kpa_results = {}
+        for key, value in decoded.items():
+            if 'frequency' in key:
+                conversion = frequency_to_kpa(value, temperature_c)
+                if conversion:
+                    status = get_irrigation_status(conversion['kpa'])
+                    kpa_results[key] = {
+                        'kpa': conversion['kpa'],
+                        'status': status['label'],
+                        'action': status['action'],
+                    }
+
+        log_parts = [f"Uplink saved (ID: {uplink_id}) device={device_id} RSSI={rssi} SNR={snr}"]
+        for key, info in kpa_results.items():
+            log_parts.append(f"  {key}: {info['kpa']} kPa [{info['status']}]")
+        print('\n'.join(log_parts))
 
         return jsonify({
             'success': True,
             'uplink_id': uplink_id,
             'device_id': device_id,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'soil_moisture': kpa_results,
         }), 200
 
     except KeyError as e:
@@ -176,6 +195,54 @@ def sprays():
         return jsonify(get_spray_applications(device_id=device_id, limit=limit))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/soil-moisture')
+def soil_moisture():
+    """Get latest soil moisture readings with kPa values and irrigation status.
+
+    Optional query params: ?device_id=  &limit=
+    """
+    try:
+        device_id = request.args.get('device_id')
+        limit = request.args.get('limit', 10, type=int)
+
+        from database import get_connection
+        conn = get_connection()
+        query = '''
+            SELECT r.reading_time, r.device_id, r.sensor_index,
+                   r.raw_value, r.calculated_value, r.calculated_unit,
+                   r.quality, r.status
+            FROM readings r
+            JOIN sensor_types st ON r.sensor_type_id = st.id
+            WHERE st.type_code = 'soil_moisture_kpa'
+        '''
+        params = []
+        if device_id:
+            query += ' AND r.device_id = ?'
+            params.append(device_id)
+        query += ' ORDER BY r.reading_time DESC LIMIT ?'
+        params.append(limit)
+
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+
+        results = []
+        for row in rows:
+            kpa = row['calculated_value']
+            status = get_irrigation_status(kpa) if kpa is not None else None
+            results.append({
+                'reading_time': row['reading_time'],
+                'device_id': row['device_id'],
+                'sensor_index': row['sensor_index'],
+                'frequency_khz': row['raw_value'],
+                'kpa': kpa,
+                'irrigation_status': status,
+            })
+
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/health')
 def health():

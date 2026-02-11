@@ -15,6 +15,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from conversions import frequency_to_kpa, get_irrigation_status
+
 DB_PATH = Path(__file__).parent.parent / 'data' / 'sensors.db'
 
 
@@ -296,6 +298,15 @@ def save_uplink(device_id, timestamp, gateway_id, rssi, snr, sensor_data):
     ''', (device_id, timestamp, gateway_id, rssi, snr))
     uplink_id = cursor.lastrowid
 
+    # Extract temperature from this uplink for kPa compensation
+    temperature_c = sensor_data.get('mcu_temperature_c')
+
+    # Resolve the kPa sensor type id once (for inserting calculated readings)
+    kpa_type_row = conn.execute(
+        "SELECT id FROM sensor_types WHERE type_code = 'soil_moisture_kpa'"
+    ).fetchone()
+    kpa_sensor_type_id = kpa_type_row['id'] if kpa_type_row else None
+
     # Save each sensor value as a reading
     for key, value in sensor_data.items():
         resolved = _resolve_sensor_type(conn, key)
@@ -308,6 +319,24 @@ def save_uplink(device_id, timestamp, gateway_id, rssi, snr, sensor_data):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (uplink_id, device_id, timestamp, sensor_type_id,
                   sensor_index, value, raw_unit, 'raw'))
+
+            # Auto-convert soil moisture frequency -> kPa
+            type_code = _SENSOR_NAME_MAP.get(key, (None,))[0]
+            if type_code == 'soil_moisture_frequency' and kpa_sensor_type_id:
+                conversion = frequency_to_kpa(value, temperature_c)
+                if conversion:
+                    status_info = get_irrigation_status(conversion['kpa'])
+                    cursor.execute('''
+                        INSERT INTO readings
+                            (uplink_id, device_id, reading_time, sensor_type_id,
+                             sensor_index, raw_value, raw_unit,
+                             calculated_value, calculated_unit,
+                             quality, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (uplink_id, device_id, timestamp, kpa_sensor_type_id,
+                          sensor_index, value, raw_unit,
+                          conversion['kpa'], 'kPa',
+                          status_info['status'], 'calculated'))
         else:
             # Unknown sensor: store with a dynamic sensor type
             sensor_type_id = _get_or_create_sensor_type(conn, key, value)
