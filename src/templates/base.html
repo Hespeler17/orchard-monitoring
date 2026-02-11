@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Dashboard{% endblock %} - Fruktodling</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <a href="{{ url_for('index') }}" class="navbar-brand">Fruktodling</a>
+            <button class="nav-toggle" onclick="this.nextElementSibling.classList.toggle('open')">&#9776;</button>
+            <ul class="nav-links">
+                <li><a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Oversikt</a></li>
+                <li><a href="{{ url_for('soil_moisture') }}" class="{% if request.endpoint == 'soil_moisture' %}active{% endif %}">Markfukt</a></li>
+                <li><a href="{{ url_for('devices_list') }}" class="{% if request.endpoint == 'devices_list' %}active{% endif %}">Enheter</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            Orchard Monitoring &middot; Heisala, Kaunislahti
+        </div>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

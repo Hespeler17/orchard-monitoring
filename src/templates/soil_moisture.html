@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Markfukt{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Markfukt</h1>
+    <p>Watermark-sensorer &middot; kPa-konvertering via Mills tabell med temperaturkompensering</p>
+</div>
+
+<!-- Current status cards -->
+{% if current %}
+<div class="sensor-grid">
+    {% for s in current %}
+    <div class="sensor-card status-{{ s.status }}">
+        <div class="sensor-title">{{ s.device_id }} &middot; Sensor {{ s.sensor_index }}</div>
+        <div class="sensor-value">
+            {{ "%.0f"|format(s.kpa) }}
+            <span class="sensor-unit">kPa</span>
+            <span class="badge badge-{{ s.status }}">{{ s.label }}</span>
+        </div>
+        <div class="kpa-scale">
+            <div class="seg-saturated"></div>
+            <div class="seg-optimal"></div>
+            <div class="seg-moderate"></div>
+            <div class="seg-dry"></div>
+            <div class="seg-very-dry"></div>
+        </div>
+        <div class="kpa-scale-labels">
+            <span>0</span><span>10</span><span>33</span><span>60</span><span>100</span><span>200+</span>
+        </div>
+        <div class="sensor-action">{{ s.action }}</div>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-light);">
+            {{ s.freq|int }} kHz &middot; {{ s.time }}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Chart -->
+<div class="card">
+    <div class="card-header">
+        <h2>Historik</h2>
+        <div>
+            <button class="btn btn-sm" onclick="setRange(24)">24h</button>
+            <button class="btn btn-sm" onclick="setRange(72)">3d</button>
+            <button class="btn btn-sm" onclick="setRange(168)">7d</button>
+            <button class="btn btn-sm" onclick="setRange(0)">Alla</button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="chart-container">
+            <canvas id="kpaChart" height="300"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Data table -->
+<div class="card">
+    <div class="card-header">
+        <h2>Mätdata</h2>
+        <a href="{{ url_for('export_soil_csv') }}" class="btn btn-sm">Exportera CSV</a>
+    </div>
+    <div class="table-responsive">
+        <table>
+            <thead>
+                <tr>
+                    <th>Tid</th>
+                    <th>Enhet</th>
+                    <th class="num">Sensor</th>
+                    <th class="num">kHz</th>
+                    <th class="num">kPa</th>
+                    <th>Status</th>
+                    <th>Rekommendation</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in readings %}
+                <tr>
+                    <td class="timestamp">{{ r.time }}</td>
+                    <td><a href="{{ url_for('device_detail', device_id=r.device_id) }}">{{ r.device_id }}</a></td>
+                    <td class="num">{{ r.sensor_index }}</td>
+                    <td class="num mono">{{ r.freq|int }}</td>
+                    <td class="num mono">{{ "%.0f"|format(r.kpa) }}</td>
+                    <td><span class="badge badge-{{ r.status }}">{{ r.label }}</span></td>
+                    <td style="font-size:13px;">{{ r.action }}</td>
+                </tr>
+                {% endfor %}
+                {% if not readings %}
+                <tr><td colspan="7" class="empty-state">Inga markfuktmätningar ännu</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Chart data from server
+    const chartData = {{ chart_data|tojson }};
+
+    // Build datasets grouped by device+sensor
+    const datasets = {};
+    const statusColors = {
+        'saturated': '#4caf50', 'optimal': '#2d7a3a',
+        'moderate': '#ffc107', 'dry': '#ff9800',
+        'very_dry': '#f44336', 'critical': '#c62828'
+    };
+    const lineColors = ['#2d7a3a', '#1565c0', '#6a1b9a', '#c62828'];
+    let colorIdx = 0;
+
+    chartData.forEach(function(pt) {
+        const key = pt.device_id + ' S' + pt.sensor_index;
+        if (!datasets[key]) {
+            const c = lineColors[colorIdx % lineColors.length];
+            colorIdx++;
+            datasets[key] = {
+                label: key,
+                data: [],
+                borderColor: c,
+                backgroundColor: c + '20',
+                borderWidth: 2,
+                pointRadius: 3,
+                pointHoverRadius: 5,
+                tension: 0.3,
+                fill: false
+            };
+        }
+        datasets[key].data.push({ x: pt.time, y: pt.kpa });
+    });
+
+    const ctx = document.getElementById('kpaChart').getContext('2d');
+    const chart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets: Object.values(datasets) },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'nearest', intersect: false },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: { tooltipFormat: 'yyyy-MM-dd HH:mm' },
+                    title: { display: true, text: 'Tid' }
+                },
+                y: {
+                    title: { display: true, text: 'kPa' },
+                    min: 0,
+                    suggestedMax: 100
+                }
+            },
+            plugins: {
+                legend: { position: 'top' },
+                annotation: undefined
+            }
+        },
+        plugins: [{
+            id: 'thresholdLines',
+            beforeDraw: function(chart) {
+                const ctx = chart.ctx;
+                const yScale = chart.scales.y;
+                const xStart = chart.chartArea.left;
+                const xEnd = chart.chartArea.right;
+
+                const thresholds = [
+                    { val: 10, color: '#4caf5040', label: '' },
+                    { val: 33, color: '#ffc10740', label: '33 kPa' },
+                    { val: 60, color: '#ff980040', label: '60 kPa' },
+                    { val: 100, color: '#f4433640', label: '100 kPa' }
+                ];
+
+                thresholds.forEach(function(t) {
+                    if (t.val > yScale.max) return;
+                    const y = yScale.getPixelForValue(t.val);
+                    ctx.save();
+                    ctx.strokeStyle = t.color.replace('40', 'aa');
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([5, 5]);
+                    ctx.beginPath();
+                    ctx.moveTo(xStart, y);
+                    ctx.lineTo(xEnd, y);
+                    ctx.stroke();
+                    if (t.label) {
+                        ctx.fillStyle = '#78909c';
+                        ctx.font = '11px sans-serif';
+                        ctx.fillText(t.label, xEnd + 4, y + 4);
+                    }
+                    ctx.restore();
+                });
+            }
+        }]
+    });
+
+    function setRange(hours) {
+        if (hours === 0) {
+            chart.options.scales.x.min = undefined;
+        } else {
+            const now = new Date();
+            chart.options.scales.x.min = new Date(now - hours * 3600000);
+        }
+        chart.update();
+    }
+
+    // Auto-refresh every 60 seconds
+    setTimeout(function() { location.reload(); }, 60000);
+</script>
+{% endblock %}

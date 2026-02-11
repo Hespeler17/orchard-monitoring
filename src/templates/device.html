@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}{{ device.device_id }}{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ device.device_id }}</h1>
+    <p>{{ device.location or 'Plats ej angiven' }}
+       {% if device.device_type %} &middot; {{ device.device_type }}{% endif %}
+       &middot; Registrerad {{ device.created_at[:10] if device.created_at else '—' }}
+    </p>
+</div>
+
+<!-- Current soil moisture -->
+{% if soil_status %}
+<div class="sensor-grid">
+    {% for s in soil_status %}
+    <div class="sensor-card status-{{ s.status }}">
+        <div class="sensor-title">Sensor {{ s.sensor_index }}</div>
+        <div class="sensor-value">
+            {{ "%.0f"|format(s.kpa) }}
+            <span class="sensor-unit">kPa</span>
+            <span class="badge badge-{{ s.status }}">{{ s.label }}</span>
+        </div>
+        <div class="kpa-scale">
+            <div class="seg-saturated"></div>
+            <div class="seg-optimal"></div>
+            <div class="seg-moderate"></div>
+            <div class="seg-dry"></div>
+            <div class="seg-very-dry"></div>
+        </div>
+        <div class="kpa-scale-labels">
+            <span>0</span><span>10</span><span>33</span><span>60</span><span>100</span><span>200+</span>
+        </div>
+        <div class="sensor-action">{{ s.action }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- History chart -->
+<div class="card">
+    <div class="card-header">
+        <h2>Historik</h2>
+        <div>
+            <button class="btn btn-sm" onclick="setRange(24)">24h</button>
+            <button class="btn btn-sm" onclick="setRange(72)">3d</button>
+            <button class="btn btn-sm" onclick="setRange(168)">7d</button>
+            <button class="btn btn-sm" onclick="setRange(0)">Alla</button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="chart-container">
+            <canvas id="deviceChart" height="300"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- All readings table -->
+<div class="card">
+    <div class="card-header">
+        <h2>Alla avläsningar</h2>
+        <a href="{{ url_for('export_device_csv', device_id=device.device_id) }}" class="btn btn-sm">Exportera CSV</a>
+    </div>
+    <div class="table-responsive">
+        <table>
+            <thead>
+                <tr>
+                    <th>Tid</th>
+                    <th>Sensor</th>
+                    <th class="num">Rått</th>
+                    <th class="num">Beräknat</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in readings %}
+                <tr>
+                    <td class="timestamp">{{ r.reading_time[:19]|replace('T', ' ') }}</td>
+                    <td>{{ r.display_name }}{% if r.sensor_index %} #{{ r.sensor_index }}{% endif %}</td>
+                    <td class="num mono">
+                        {% if r.raw_value is not none %}
+                            {{ "%.1f"|format(r.raw_value) }} {{ r.raw_unit or r.unit }}
+                        {% else %}—{% endif %}
+                    </td>
+                    <td class="num mono">
+                        {% if r.calculated_value is not none %}
+                            {{ "%.1f"|format(r.calculated_value) }} {{ r.calculated_unit or '' }}
+                        {% else %}—{% endif %}
+                    </td>
+                    <td>
+                        {% if r.quality %}
+                            <span class="badge badge-{{ r.quality }}">{{ r.quality }}</span>
+                        {% elif r.status %}
+                            <span class="badge badge-{{ r.status }}">{{ r.status }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not readings %}
+                <tr><td colspan="5" class="empty-state">Inga avläsningar</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Radio stats -->
+{% if uplinks %}
+<div class="card">
+    <div class="card-header">
+        <h2>Radio / Gateway</h2>
+    </div>
+    <div class="table-responsive">
+        <table>
+            <thead>
+                <tr>
+                    <th>Tid</th>
+                    <th>Gateway</th>
+                    <th class="num">RSSI</th>
+                    <th class="num">SNR</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in uplinks %}
+                <tr>
+                    <td class="timestamp">{{ u.timestamp[:19]|replace('T', ' ') }}</td>
+                    <td>{{ u.gateway_id or '—' }}</td>
+                    <td class="num mono">{{ u.rssi or '—' }} dBm</td>
+                    <td class="num mono">{{ u.snr or '—' }} dB</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const chartData = {{ chart_data|tojson }};
+    const lineColors = ['#2d7a3a', '#1565c0', '#ff9800', '#6a1b9a'];
+
+    // Group by sensor type + index
+    const datasets = {};
+    let colorIdx = 0;
+
+    chartData.forEach(function(pt) {
+        const key = pt.label;
+        if (!datasets[key]) {
+            const c = lineColors[colorIdx % lineColors.length];
+            colorIdx++;
+            datasets[key] = {
+                label: key,
+                data: [],
+                borderColor: c,
+                backgroundColor: c + '20',
+                borderWidth: 2,
+                pointRadius: 3,
+                tension: 0.3,
+                fill: false,
+                yAxisID: pt.unit === 'kPa' ? 'y' : 'y1'
+            };
+        }
+        datasets[key].data.push({ x: pt.time, y: pt.value });
+    });
+
+    // Determine if we need dual y-axis
+    const hasKpa = chartData.some(function(p) { return p.unit === 'kPa'; });
+    const hasOther = chartData.some(function(p) { return p.unit !== 'kPa'; });
+
+    const scales = {
+        x: {
+            type: 'time',
+            time: { tooltipFormat: 'yyyy-MM-dd HH:mm' },
+            title: { display: true, text: 'Tid' }
+        },
+        y: {
+            type: 'linear',
+            position: 'left',
+            title: { display: true, text: hasKpa ? 'kPa' : 'Värde' },
+            min: 0
+        }
+    };
+
+    if (hasKpa && hasOther) {
+        scales.y1 = {
+            type: 'linear',
+            position: 'right',
+            title: { display: true, text: 'Övrigt' },
+            grid: { drawOnChartArea: false }
+        };
+    }
+
+    const ctx = document.getElementById('deviceChart').getContext('2d');
+    const chart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets: Object.values(datasets) },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'nearest', intersect: false },
+            scales: scales,
+            plugins: { legend: { position: 'top' } }
+        }
+    });
+
+    function setRange(hours) {
+        if (hours === 0) {
+            chart.options.scales.x.min = undefined;
+        } else {
+            const now = new Date();
+            chart.options.scales.x.min = new Date(now - hours * 3600000);
+        }
+        chart.update();
+    }
+
+    setTimeout(function() { location.reload(); }, 60000);
+</script>
+{% endblock %}

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Enheter{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Enheter</h1>
+    <p>Alla registrerade sensorer</p>
+</div>
+
+{% if devices %}
+<div class="device-list">
+    {% for d in devices %}
+    <a href="{{ url_for('device_detail', device_id=d.device_id) }}" class="device-card">
+        <div class="device-name">{{ d.device_id }}</div>
+        <div class="device-location">{{ d.location or 'Plats ej angiven' }}</div>
+        <div class="device-meta">
+            <span>Typ: {{ d.device_type or '—' }}</span>
+            <span>Sedan: {{ d.created_at[:10] if d.created_at else '—' }}</span>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="card">
+    <div class="card-body empty-state">
+        <h3>Inga enheter registrerade</h3>
+        <p>Enheter registreras automatiskt när data tas emot via webhook.</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

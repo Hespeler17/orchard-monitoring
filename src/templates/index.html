@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Oversikt{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Oversikt</h1>
+    <p>
+        <span class="refresh-indicator">
+            <span class="refresh-dot"></span>
+            Uppdateras var 60:e sekund
+        </span>
+    </p>
+</div>
+
+<!-- Stat cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.devices }}</div>
+        <div class="stat-label">Enheter</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.uplinks }}</div>
+        <div class="stat-label">Upplänkar</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.readings }}</div>
+        <div class="stat-label">Mätvärden</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.sensor_types }}</div>
+        <div class="stat-label">Sensortyper</div>
+    </div>
+</div>
+
+<!-- Current soil moisture status -->
+{% if soil_status %}
+<div class="card">
+    <div class="card-header">
+        <h2>Markfukt just nu</h2>
+        <a href="{{ url_for('soil_moisture') }}" class="btn btn-sm">Visa alla &rarr;</a>
+    </div>
+    <div class="card-body">
+        <div class="sensor-grid">
+            {% for s in soil_status %}
+            <div class="sensor-card status-{{ s.status }}">
+                <div class="sensor-title">{{ s.device_id }} &middot; Sensor {{ s.sensor_index }}</div>
+                <div class="sensor-value">
+                    {{ "%.0f"|format(s.kpa) }}
+                    <span class="sensor-unit">kPa</span>
+                    <span class="badge badge-{{ s.status }}">{{ s.label }}</span>
+                </div>
+                <!-- kPa scale -->
+                <div class="kpa-scale">
+                    <div class="seg-saturated"></div>
+                    <div class="seg-optimal"></div>
+                    <div class="seg-moderate"></div>
+                    <div class="seg-dry"></div>
+                    <div class="seg-very-dry"></div>
+                </div>
+                <div class="kpa-scale-labels">
+                    <span>0</span><span>10</span><span>33</span><span>60</span><span>100</span><span>200+</span>
+                </div>
+                <div class="sensor-action">{{ s.action }}</div>
+                <div style="margin-top:6px;font-size:12px;color:var(--text-light);">
+                    {{ s.freq|int }} kHz &middot; {{ s.time }}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Devices -->
+{% if devices %}
+<div class="card">
+    <div class="card-header">
+        <h2>Enheter</h2>
+    </div>
+    <div class="card-body">
+        <div class="device-list">
+            {% for d in devices %}
+            <a href="{{ url_for('device_detail', device_id=d.device_id) }}" class="device-card">
+                <div class="device-name">{{ d.device_id }}</div>
+                <div class="device-location">{{ d.location or 'Plats ej angiven' }}</div>
+                <div class="device-meta">
+                    <span>Typ: {{ d.device_type or '—' }}</span>
+                    <span>Sedan: {{ d.created_at[:10] if d.created_at else '—' }}</span>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Latest readings table -->
+<div class="card">
+    <div class="card-header">
+        <h2>Senaste avläsningar</h2>
+    </div>
+    <div class="table-responsive">
+        <table>
+            <thead>
+                <tr>
+                    <th>Tid</th>
+                    <th>Enhet</th>
+                    <th>Sensor</th>
+                    <th class="num">Värde</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in readings %}
+                <tr>
+                    <td class="timestamp">{{ r.reading_time[:19]|replace('T', ' ') }}</td>
+                    <td><a href="{{ url_for('device_detail', device_id=r.device_id) }}">{{ r.device_id }}</a></td>
+                    <td>{{ r.display_name }}</td>
+                    <td class="num mono">
+                        {% if r.calculated_value is not none %}
+                            {{ "%.1f"|format(r.calculated_value) }} {{ r.calculated_unit or r.unit }}
+                        {% elif r.raw_value is not none %}
+                            {{ "%.1f"|format(r.raw_value) }} {{ r.unit }}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if r.quality %}
+                            <span class="badge badge-{{ r.quality }}">{{ r.quality }}</span>
+                        {% elif r.status %}
+                            <span class="badge badge-{{ r.status }}">{{ r.status }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not readings %}
+                <tr><td colspan="5" class="empty-state">Inga avläsningar ännu</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Auto-refresh every 60 seconds
+    setTimeout(function() { location.reload(); }, 60000);
+</script>
+{% endblock %}
