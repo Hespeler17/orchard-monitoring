@@ -211,6 +211,26 @@ def _seed_sensor_types(conn):
             0, 5, 3.3, 4.2,
             3.0, None, 2.8, None
         ),
+        (
+            'soil_temperature', 'Marktemperatur', '°C', 'soil',
+            -10, 50, 5, 25,
+            0, 30, -5, 35
+        ),
+        (
+            'air_temperature', 'Lufttemperatur', '°C', 'weather',
+            -30, 50, 5, 30,
+            0, 35, -10, 40
+        ),
+        (
+            'ambient_temperature', 'Intern temperatur', '°C', 'climate',
+            -20, 60, 10, 35,
+            5, 40, 0, 50
+        ),
+        (
+            'ambient_humidity', 'Intern luftfuktighet', '%', 'climate',
+            0, 100, 30, 70,
+            20, 80, 10, 90
+        ),
     ]
 
     conn.executemany('''
@@ -229,8 +249,17 @@ def _seed_sensor_types(conn):
 # ---------------------------------------------------------------------------
 
 _SENSOR_NAME_MAP = {
+    # KIWI-001 (legacy)
     'input5_frequency_khz': ('soil_moisture_frequency', 1),
     'input6_frequency_khz': ('soil_moisture_frequency', 2),
+    # KIWI-002
+    'watermark_1_freq_khz': ('soil_moisture_frequency', 1),
+    'watermark_2_freq_khz': ('soil_moisture_frequency', 2),
+    'input3_temperature_c': ('soil_temperature', 1),
+    'input4_temperature_c': ('air_temperature', 1),
+    'ambient_temperature_c': ('ambient_temperature', 0),
+    'ambient_humidity_percent': ('ambient_humidity', 0),
+    # Common
     'mcu_temperature_c': ('temperature', 0),
     'light_intensity_lux': ('light_intensity', 0),
 }
@@ -276,12 +305,45 @@ def ensure_device(conn, device_id, device_type=None):
 # Save uplink (main entry point for incoming data)
 # ---------------------------------------------------------------------------
 
+def _fix_frequency(value):
+    """Fix high frequency values from KIWI-002 decoder.
+
+    The decoder sometimes reports frequency in Hz instead of kHz.
+    If value > 5000, divide by 1000 to convert to kHz.
+    Example: 7663 kHz -> 7.663 kHz
+    """
+    if value is not None and value > 5000:
+        return value / 1000.0
+    return value
+
+
+def _battery_percent_to_voltage(percent):
+    """Convert battery percentage to estimated voltage.
+
+    Maps 0-100% linearly to 2.8-4.2V (typical LiPo range).
+    """
+    if percent is None:
+        return None
+    percent = max(0, min(100, percent))
+    return round(2.8 + (percent / 100.0) * 1.4, 2)
+
+
+# Fields from KIWI-002 decoder that we ignore (we calculate kPa ourselves)
+_IGNORED_FIELDS = {
+    'watermark_1_kpa', 'watermark_2_kpa',
+    'watermark_1_status', 'watermark_2_status',
+    'battery_days_remaining',
+}
+
+
 def save_uplink(device_id, timestamp, gateway_id, rssi, snr, sensor_data):
     """Save an uplink with all sensor readings to the database.
 
     This is the primary function called by both webhook_server and ttn_mqtt_save.
     It writes to the legacy uplinks table (radio metadata) and the new readings
     table (one row per sensor value).
+
+    Supports both KIWI-001 and KIWI-002 payload formats.
 
     Returns the uplink_id.
     """
@@ -307,11 +369,41 @@ def save_uplink(device_id, timestamp, gateway_id, rssi, snr, sensor_data):
     ).fetchone()
     kpa_sensor_type_id = kpa_type_row['id'] if kpa_type_row else None
 
+    # Resolve battery_voltage sensor type for battery_percent conversion
+    batt_type_row = conn.execute(
+        "SELECT id, unit FROM sensor_types WHERE type_code = 'battery_voltage'"
+    ).fetchone()
+
     # Save each sensor value as a reading
     for key, value in sensor_data.items():
+        # Skip fields we ignore from KIWI-002 decoder
+        if key in _IGNORED_FIELDS:
+            continue
+
+        # Handle battery_percent: convert to battery_voltage
+        if key == 'battery_percent' and batt_type_row:
+            voltage = _battery_percent_to_voltage(value)
+            if voltage is not None:
+                cursor.execute('''
+                    INSERT INTO readings
+                        (uplink_id, device_id, reading_time, sensor_type_id,
+                         sensor_index, raw_value, raw_unit,
+                         calculated_value, calculated_unit, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (uplink_id, device_id, timestamp, batt_type_row['id'],
+                      0, value, '%',
+                      voltage, 'V', 'calculated'))
+            continue
+
         resolved = _resolve_sensor_type(conn, key)
         if resolved:
             sensor_type_id, sensor_index, raw_unit = resolved
+
+            # Fix high frequency values from KIWI-002 decoder
+            type_code = _SENSOR_NAME_MAP.get(key, (None,))[0]
+            if type_code == 'soil_moisture_frequency':
+                value = _fix_frequency(value)
+
             cursor.execute('''
                 INSERT INTO readings
                     (uplink_id, device_id, reading_time, sensor_type_id,
@@ -321,7 +413,6 @@ def save_uplink(device_id, timestamp, gateway_id, rssi, snr, sensor_data):
                   sensor_index, value, raw_unit, 'raw'))
 
             # Auto-convert soil moisture frequency -> kPa
-            type_code = _SENSOR_NAME_MAP.get(key, (None,))[0]
             if type_code == 'soil_moisture_frequency' and kpa_sensor_type_id:
                 conversion = frequency_to_kpa(value, temperature_c)
                 if conversion:

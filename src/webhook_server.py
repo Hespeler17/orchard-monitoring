@@ -102,7 +102,10 @@ def webhook():
         temperature_c = decoded.get('mcu_temperature_c')
         kpa_results = {}
         for key, value in decoded.items():
-            if 'frequency' in key:
+            if 'freq' in key and 'khz' in key.lower():
+                # Apply same frequency fix as save_uplink
+                if value is not None and value > 5000:
+                    value = value / 1000.0
                 conversion = frequency_to_kpa(value, temperature_c)
                 if conversion:
                     status = get_irrigation_status(conversion['kpa'])
